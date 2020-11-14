@@ -14,7 +14,6 @@ import json
 import os
 import os.path
 import subprocess
-import configparser
 from flask import Flask, jsonify, request
 from flask_socketio import SocketIO
 from flask_cors import CORS
@@ -60,6 +59,50 @@ def checkPayload(payload):
         return False, {'results': 'Missing data field.'}
     return True, ''
 
+def checkElements(elements, received_dataset):
+    elements_num = -1
+    for row in elements:
+        if not 'data' in row:
+            return False, {'results': 'Missing data field.'}
+        if not 'result' in row:
+            return False, {'results': 'Missing result field.'}
+        elements = row['data'].split(',')
+        if elements_num == -1:
+            elements_num = len(elements)
+        else:
+            if (elements_num != len(elements)):
+                return False, {'results': 'Data field has a wrong size.'}
+        line = svm_lib.elementsToSVM(row["result"], elements)
+        received_dataset = f'{received_dataset}\n{line}'
+        return True, received_dataset
+
+def checkAppend(payload, model):
+    append = False
+    if 'append' in payload:
+        append = payload['append']
+    if append == False:
+        if os.path.isfile(f'{configurations["svmTrainings"]}/{model}.training'):
+            return False, {'results': 'Model is present, change name or use append.'}
+    return True, ''
+
+def checkAll(payload, model):
+    result, message = checkPayload(payload)
+    if not result:
+        return False, message
+    result, message = checkAppend(payload, model)
+    if not result:
+        return False, message
+    result, message = checkPayload(payload)
+    if not result:
+        return False, message
+    return True, ''
+
+def performTrain(received_dataset, model):
+    svm_lib.writeSVM(f'{configurations["svmTrainings"]}/{model}.training', received_dataset)
+    status = subprocess.check_output(f'{configurations["svmPath"]}/svm_learn -z r {configurations["svmTrainings"]}/{model}.training {configurations["svmModels"]}/{model}.model', shell=True).decode().splitlines()
+    results = svm_lib.readSVM(f'{configurations["svmModels"]}/{model}.model')
+    return status, results
+
 @app.route('/model/<mymodel>/train', methods=['GET', 'POST'])
 def train(mymodel):
     if request.method == 'POST':
@@ -67,38 +110,15 @@ def train(mymodel):
         timestr = time.strftime("%Y%m%d-%H%M%S")+'-'+str(time.time())
         received_dataset = f'# dataset - {timestr}'
         payload = request.get_json()
-        result, message = checkPayload(payload)
+        result, message = checkAll(payload, model)
         if not result:
             return jsonify(message)
-        append = False
-        if 'append' in payload:
-            append = payload['append']
-        if append == False:
-            if os.path.isfile(f'{configurations["svmTrainings"]}/{model}.training'):
-                json_result = {'results': 'Model is present, change name or use append.'}
-                return jsonify(json_result)
-        elements_num = -1
-        for row in payload['dataset']:
-            if not 'data' in row:
-                return jsonify({'results': 'Missing data field.'})
-            if not 'result' in row:
-                return jsonify({'results': 'Missing result field.'})
-
-            elements = row['data'].split(',')
-            if elements_num == -1:
-                elements_num = len(elements)
-            else:
-                if (elements_num != len(elements)):
-                    return jsonify({'results': 'Data field has a wrong size.'})
-            line = svm_lib.elementsToSVM(row["result"], elements)
-            received_dataset = f'{received_dataset}\n{line}'
-        svm_lib.writeSVM(f'{configurations["svmTrainings"]}/{model}.training', received_dataset)
-        status = subprocess.check_output(f'{configurations["svmPath"]}/svm_learn -z r {configurations["svmTrainings"]}/{model}.training {configurations["svmModels"]}/{model}.model', shell=True).decode().splitlines()
-        results = svm_lib.readSVM(f'{configurations["svmModels"]}/{model}.model')
+        result, received_dataset = checkElements(payload['dataset'], received_dataset)
+        if not result:
+            return jsonify(received_dataset)
+        status, results = performTrain(received_dataset, model)
         return jsonify({'status': status, 'results': results})
-    else: # if it's not a post call fail
-        return jsonify({'results': 'Use a POST call.'})
-
+    return jsonify({'results': 'Use a POST call.'})
 
 @app.route('/model/<mymodel>/predict', methods=['GET', 'POST'])
 def predict(mymodel):
@@ -146,30 +166,7 @@ def predict(mymodel):
     else:
         return jsonify({'results': 'Use a POST call.'})
 
-def printBanner():
-    print("""
-    :'######::'##::::'##:'##::::'##:::::::::::'######::'########:'########::'##::::'##:'########:'########::
-    '##... ##: ##:::: ##: ###::'###::::::::::'##... ##: ##.....:: ##.... ##: ##:::: ##: ##.....:: ##.... ##:
-     ##:::..:: ##:::: ##: ####'####:::::::::: ##:::..:: ##::::::: ##:::: ##: ##:::: ##: ##::::::: ##:::: ##:
-    . ######:: ##:::: ##: ## ### ##::::::::::. ######:: ######::: ########:: ##:::: ##: ######::: ########::
-    :..... ##:. ##:: ##:: ##. #: ##:::::::::::..... ##: ##...:::: ##.. ##:::. ##:: ##:: ##...:::: ##.. ##:::
-    '##::: ##::. ## ##::: ##:.:: ##::::::::::'##::: ##: ##::::::: ##::. ##:::. ## ##::: ##::::::: ##::. ##::
-    . ######::::. ###:::: ##:::: ##:'#######:. ######:: ########: ##:::. ##:::. ###:::: ########: ##:::. ##:
-    :......::::::...:::::..:::::..::.......:::......:::........::..:::::..:::::...:::::........::..:::::..::
-    """)
-    print(f'{configurations["NAME"]} {configurations["VERSION"]}')
-
-def parseConfig():
-    printBanner()
-    config = configparser.RawConfigParser()
-    config.read('svm_server.conf')
-    configurations['svmPath'] = config.get('SVM', 'path')
-    configurations['svmModels'] = config.get('SVM', 'models')
-    configurations['svmPredictions'] = config.get('SVM', 'predictions')
-    configurations['svmTrainings'] = config.get('SVM', 'trainings')
-    return configurations
-
 if __name__ == '__main__':
-    configuration = parseConfig()
+    configuration = svm_lib.parseConfig(configurations)
     app.import_name = '.'
     socketio.run(app, host='0.0.0.0', port=5005)
