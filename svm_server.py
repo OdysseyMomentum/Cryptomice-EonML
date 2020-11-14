@@ -7,9 +7,7 @@
 # . ######::::. ###:::: ##:::: ##:'#######:. ######:: ########: ##:::. ##:::. ###:::: ########: ##:::. ##:
 # :......::::::...:::::..:::::..::.......:::......:::........::..:::::..:::::...:::::........::..:::::..::
 #
-#
-#
-#
+#                          https://github.com/OdysseyMomentum/Cryptomice-EonML
 
 import time
 import json
@@ -21,6 +19,7 @@ from flask import Flask, jsonify, request
 from flask_socketio import SocketIO
 from flask_cors import CORS
 from markupsafe import escape
+import svm_lib
 
 NAME="SVM_SERVER"
 VERSION="0.0.1-odyssey"
@@ -51,70 +50,38 @@ svmTrainings = config.get('SVM', 'trainings')
 def home():
     df = subprocess.check_output('df -h /', shell=True)
     commands = []
-    commands.append({
-        'path': '/',
-        'type': 'GET',
-        'description': 'Information about SVM_SERVER commands.' })
-    commands.append({
-        'path': '/model',
-        'type': 'GET',
-        'description': 'Get a list of known models.' })
-    commands.append({
-        'path': '/model/<modelname>',
-        'type': 'GET',
-        'description': 'Get informations connected to model <modelname>.' })
-    commands.append({
-        'path': '/model/<modelname>/train',
-        'type': 'POST',
-        'description': 'Create a new model called <modelname>.' })
-    commands.append({
-        'path': '/model/<modelname>/predict',
-        'type': 'GET/POST',
-        'description': 'Create a prediction using model <modelname> and passed dataset.' })
-
-    json_result = {'name':NAME, 'version':VERSION, 'commands':commands}
-    return jsonify(json_result)
+    commands.append({'path': '/', 'type': 'GET', 'description': 'Information about SVM_SERVER commands.' })
+    commands.append({'path': '/model', 'type': 'GET', 'description': 'Get a list of known models.' })
+    commands.append({'path': '/model/<modelname>', 'type': 'GET', 'description': 'Get informations connected to model <modelname>.' })
+    commands.append({'path': '/model/<modelname>/train', 'type': 'POST', 'description': 'Create a new model called <modelname>.' })
+    commands.append({'path': '/model/<modelname>/predict', 'type': 'GET/POST', 'description': 'Create a prediction using model <modelname> and passed dataset.' })
+    return jsonify({'name':NAME, 'version':VERSION, 'commands':commands})
 
 
 @app.route('/model')
 def models():
-    models = subprocess.check_output(f'ls -l {svmModels}/*.model', shell=True).decode().splitlines()
-    results = []
-    for model in models:
-        elements = model.split(' ')
-        if len(elements) > 2:
-            results.append(elements[-1].split(f'{svmModels}/')[1].split('.model')[0])
+    results = svm_lib.listElement(f'ls -l {svmModels}/*.model', svmModels)
     json_result = {'results': results}
     return jsonify(json_result)
+
 
 @app.route('/model/<mymodel>')
 def model(mymodel):
     model = escape(mymodel)
-    results = {'models':[], 'trainings':[], 'datasets':[], 'predictions':[]}
+    results = {}
+    results['models'] = svm_lib.listFile(f'ls -l {svmModels}/{model}.model')
+    results['trainings'] = svm_lib.listFile(f'ls -l {svmTrainings}/{model}.training')
+    results['datasets'] = svm_lib.listFile(f'ls -l {svmPredictions}/{model}*.data')
+    results['predictions'] = svm_lib.listFile(f'ls -l {svmPredictions}/{model}*.predictions')
+    return jsonify({'results': results})
 
-    for row in subprocess.check_output(f'ls -l {svmModels}/{model}.model', shell=True).decode().splitlines():
-        elements = row.split(' ')
-        if len(elements) > 2:
-            results['models'].append(elements[-1])
 
-    for row in subprocess.check_output(f'ls -l {svmTrainings}/{model}.training', shell=True).decode().splitlines():
-        elements = row.split(' ')
-        if len(elements) > 2:
-            results['trainings'].append(elements[-1])
-
-    for row in subprocess.check_output(f'ls -l {svmPredictions}/{model}*.data', shell=True).decode().splitlines():
-        elements = row.split(' ')
-        if len(elements) > 2:
-            results['datasets'].append(elements[-1])
-
-    for row in subprocess.check_output(f'ls -l {svmPredictions}/{model}*.predictions', shell=True).decode().splitlines():
-        elements = row.split(' ')
-        if len(elements) > 2:
-            results['predictions'].append(elements[-1])
-
-    json_result = {'results': results}
-    return jsonify(json_result)
-
+def checkPayload(payload):
+    if payload is None:
+        return False, {'results': 'Missing JSON payload.'}
+    if not 'dataset' in payload:
+        return False, {'results': 'Missing data field.'}
+    return True, ''
 
 @app.route('/model/<mymodel>/train', methods=['GET', 'POST'])
 def train(mymodel):
@@ -123,14 +90,10 @@ def train(mymodel):
         timestr = time.strftime("%Y%m%d-%H%M%S")+'-'+str(time.time())
         received_dataset = f'# dataset - {timestr}'
         # check received data
-        elements_num = -1
         payload = request.get_json()
-        if payload is None:
-            json_result = {'results': 'Missing JSON payload.'}
-            return jsonify(json_result)
-        if not 'dataset' in payload:
-            json_result = {'results': 'Missing data field.'}
-            return jsonify(json_result)
+        result, message = checkPayload(payload)
+        if not result:
+            return jsonify(message)
 
         # check if model is not present if needed
         append = False
@@ -142,43 +105,31 @@ def train(mymodel):
                 return jsonify(json_result)
 
         # elaborate dataset
+        elements_num = -1
         for row in payload['dataset']:
             if not 'data' in row:
-                json_result = {'results': 'Missing data field.'}
-                return jsonify(json_result)
+                return jsonify({'results': 'Missing data field.'})
             if not 'result' in row:
-                json_result = {'results': 'Missing result field.'}
-                return jsonify(json_result)
+                return jsonify({'results': 'Missing result field.'})
 
             elements = row['data'].split(',')
             if elements_num == -1:
                 elements_num = len(elements)
             else:
                 if (elements_num != len(elements)):
-                    json_result = {'results': 'Data field has a wrong size.'}
-                    return jsonify(json_result)
+                    return jsonify({'results': 'Data field has a wrong size.'})
 
             # create {model}.training lines
-            line = f'{row["result"]}'
-            i = 1
-            for e in elements:
-                line = f'{line} {i}:{e}'
-                i = i + 1
+            line = svm_lib.elementsToSVM(row["result"], elements)
             received_dataset = f'{received_dataset}\n{line}'
 
         # create {model}.training file
-        with open(f'{svmTrainings}/{model}.training', 'a') as myfile:
-            myfile.write(received_dataset)
-            myfile.write('\n')
-
+        svm_lib.writeSVM(f'{svmTrainings}/{model}.training', received_dataset)
         status = subprocess.check_output(f'{svmPath}/svm_learn -z r {svmTrainings}/{model}.training {svmModels}/{model}.model', shell=True).decode().splitlines()
-        with open (f'{svmModels}/{model}.model', 'r') as myfile:
-            results = [x.strip() for x in myfile.readlines()]
-        json_result = {'status': status, 'results': results}
-        return jsonify(json_result)
-    else:
-        json_result = {'results': 'Use a POST call.'}
-        return jsonify(json_result)
+        results = svm_lib.readSVM(f'{svmModels}/{model}.model')
+        return jsonify({'status': status, 'results': results})
+    else: # if it's not a post call fail
+        return jsonify({'results': 'Use a POST call.'})
 
 
 @app.route('/model/<mymodel>/predict', methods=['GET', 'POST'])
@@ -188,83 +139,53 @@ def predict(mymodel):
     received_dataset = f'# dataset - {timestr}'
     if request.method == 'POST':
         # check received data
-        elements_num = -1
         payload = request.get_json()
-        if payload is None:
-            json_result = {'results': 'Missing JSON payload.'}
-            return jsonify(json_result)
-        if not 'dataset' in payload:
-            json_result = {'results': 'Missing data field.'}
-            return jsonify(json_result)
+        result, message = checkPayload(payload)
+        if not result:
+            return jsonify(message)
 
         # check if model is present
         if not os.path.isfile(f'{svmModels}/{model}.model'):
-            json_result = {'results': 'Model is not present.'}
-            return jsonify(json_result)
+            return jsonify({'results': 'Model is not present.'})
 
         # elaborate dataset
+        elements_num = -1
         j = 1
         for row in payload['dataset']:
             if not 'data' in row:
-                json_result = {'results': 'Missing data field.'}
-                return jsonify(json_result)
+                return jsonify({'results': 'Missing data field.'})
 
             elements = row['data'].split(',')
             if elements_num == -1:
                 elements_num = len(elements)
             else:
                 if (elements_num != len(elements)):
-                    json_result = {'results': 'Data field has a wrong size.'}
-                    return jsonify(json_result)
+                    return jsonify({'results': 'Data field has a wrong size.'})
 
             # create {model}.training lines
-            line = f'{j}'
-            j = j + 1
-            i = 1
-            for e in elements:
-                line = f'{line} {i}:{e}'
-                i = i + 1
+            line = svm_lib.elementsToSVM(j, elements)
             received_dataset = f'{received_dataset}\n{line}'
 
         # create {model}.training file
-        with open(f'{svmPredictions}/{model}-{timestr}.data', 'a') as myfile:
-            myfile.write(received_dataset)
-            myfile.write('\n')
-
+        svm_lib.writeSVM(f'{svmPredictions}/{model}-{timestr}.data', received_dataset)
         status = subprocess.check_output(f'{svmPath}/svm_classify {svmPredictions}/{model}-{timestr}.data {svmModels}/{model}.model {svmPredictions}/{model}-{timestr}.predictions', shell=True).decode().splitlines()
-        with open (f'{svmPredictions}/{model}-{timestr}.data', 'r') as myfile:
-            dat = [x.strip() for x in myfile.readlines()]
-        with open (f'{svmPredictions}/{model}-{timestr}.predictions', 'r') as myfile:
-            res = [x.strip() for x in myfile.readlines()]
+        dat = svm_lib.readSVM(f'{svmPredictions}/{model}-{timestr}.data')
+        res = svm_lib.readSVM(f'{svmPredictions}/{model}-{timestr}.predictions')
         results = []
         for x in range(0,len(dat)-1):
             results.append({'data':dat[x+1], 'result':res[x]})
-        json_result = {'status': status, 'results': results}
-        return jsonify(json_result)
-    else:
+        return jsonify({'status': status, 'results': results})
+    elif request.method == 'GET': # if noget
         if 'data' in request.values:
-            elements = request.values['data'].split(',')
-            line = '1'
-            i = 1
-            for e in elements:
-                line = f'{line} {i}:{e}'
-                i = i + 1
-            received_dataset = f'{received_dataset}\n{line}'
-
-            # create {model}.training file
-            with open(f'{svmPredictions}/{model}-{timestr}.data', 'a') as myfile:
-                myfile.write(received_dataset)
-                myfile.write('\n')
-
+            line = received_dataset+'\n'+elementsToSVM('1', request.values['data'].split(','))
+            svm_lib.writeSVM(f'{svmPredictions}/{model}-{timestr}.data', line)
             status = subprocess.check_output(f'{svmPath}/svm_classify {svmPredictions}/{model}-{timestr}.data {svmModels}/{model}.model {svmPredictions}/{model}-{timestr}.predictions', shell=True).decode().splitlines()
-            with open (f'{svmPredictions}/{model}-{timestr}.predictions', 'r') as myfile:
-                results = [x.strip() for x in myfile.readlines()]
-            json_result = {'results': results}
-            return jsonify(json_result)
-
+            results = svm_lib.readSVM(f'{svmPredictions}/{model}-{timestr}.predictions')
+            return jsonify({'results': results})
         else:
-            json_result = {'results': 'Use a POST call.'}
-            return jsonify(json_result)
+            return jsonify({'results': 'Missing data.'})
+    else:
+        return jsonify({'results': 'Use a POST call.'})
 
 
 if __name__ == '__main__':
