@@ -201,7 +201,6 @@ curl http://localhost:5005/model/supplychain123/train -d @training.json -H 'Cont
 
 # API
 
-|------------------------|-----------|-----------------------------------------|
 | Path                   | Methods   | Description                             |
 |------------------------|-----------|-----------------------------------------|
 | /                      | GET       | Information about SVM_SERVER commands.  |
