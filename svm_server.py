@@ -19,6 +19,8 @@ from flask_socketio import SocketIO
 from flask_cors import CORS
 from markupsafe import escape
 import svm_lib
+import svm_utils
+import svm_checks
 
 configurations = {'NAME': 'SVM_SERVER', 'VERSION': '0.0.2-odyssey'}
 app = Flask(__name__)
@@ -52,51 +54,6 @@ def model(mymodel):
     results['predictions'] = svm_lib.listFile(f'ls -l {configurations["svmPredictions"]}/{model}*.predictions')
     return jsonify({'results': results})
 
-def checkPayload(payload):
-    if payload is None:
-        return False, {'results': 'Missing JSON payload.'}
-    if not 'dataset' in payload:
-        return False, {'results': 'Missing data field.'}
-    return True, ''
-
-def checkElements(elements, received_dataset):
-    elements_num = -1
-    for row in elements:
-        if not 'data' in row:
-            return False, {'results': 'Missing data field.'}
-        if not 'result' in row:
-            return False, {'results': 'Missing result field.'}
-        elements = row['data'].split(',')
-        if elements_num == -1:
-            elements_num = len(elements)
-        else:
-            if (elements_num != len(elements)):
-                return False, {'results': 'Data field has a wrong size.'}
-        line = svm_lib.elementsToSVM(row["result"], elements)
-        received_dataset = f'{received_dataset}\n{line}'
-        return True, received_dataset
-
-def checkAppend(payload, model):
-    append = False
-    if 'append' in payload:
-        append = payload['append']
-    if append == False:
-        if os.path.isfile(f'{configurations["svmTrainings"]}/{model}.training'):
-            return False, {'results': 'Model is present, change name or use append.'}
-    return True, ''
-
-def checkAll(payload, model):
-    result, message = checkPayload(payload)
-    if not result:
-        return False, message
-    result, message = checkAppend(payload, model)
-    if not result:
-        return False, message
-    result, message = checkPayload(payload)
-    if not result:
-        return False, message
-    return True, ''
-
 def performTrain(received_dataset, model):
     svm_lib.writeSVM(f'{configurations["svmTrainings"]}/{model}.training', received_dataset)
     status = subprocess.check_output(f'{configurations["svmPath"]}/svm_learn -z r {configurations["svmTrainings"]}/{model}.training {configurations["svmModels"]}/{model}.model', shell=True).decode().splitlines()
@@ -110,10 +67,10 @@ def train(mymodel):
         timestr = time.strftime("%Y%m%d-%H%M%S")+'-'+str(time.time())
         received_dataset = f'# dataset - {timestr}'
         payload = request.get_json()
-        result, message = checkAll(payload, model)
+        result, message = svm_checks.checkAll(payload, model, configurations)
         if not result:
             return jsonify(message)
-        result, received_dataset = checkElements(payload['dataset'], received_dataset)
+        result, received_dataset = svm_checks.checkElements(payload['dataset'], received_dataset, configurations)
         if not result:
             return jsonify(received_dataset)
         status, results = performTrain(received_dataset, model)
@@ -127,7 +84,7 @@ def predict(mymodel):
     received_dataset = f'# dataset - {timestr}'
     if request.method == 'POST':
         payload = request.get_json()
-        result, message = checkPayload(payload)
+        result, message = svm_checks.checkPayload(payload, configurations)
         if not result:
             return jsonify(message)
         if not os.path.isfile(f'{configurations["svmModels"]}/{model}.model'):
@@ -167,6 +124,6 @@ def predict(mymodel):
         return jsonify({'results': 'Use a POST call.'})
 
 if __name__ == '__main__':
-    configuration = svm_lib.parseConfig(configurations)
+    configuration = svm_utils.parseConfig(configurations)
     app.import_name = '.'
     socketio.run(app, host='0.0.0.0', port=5005)
