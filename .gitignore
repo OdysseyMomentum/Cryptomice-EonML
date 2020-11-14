@@ -3,6 +3,6 @@ venv
 venv3
 *.model
 *.data
-*.prediction
+*.predictions
 *.training
 svm_light
