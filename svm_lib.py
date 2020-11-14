@@ -28,7 +28,6 @@ def listElement(pattern, modelname):
         models = subprocess.check_output(pattern, shell=True).decode().splitlines()
         for model in models:
             elements = model.split(' ')
-            print(elements)
             if len(elements) > 2:
                 elements_list.append(elements[-1].split(f'{modelname}/')[1].split('.model')[0])
     except:
